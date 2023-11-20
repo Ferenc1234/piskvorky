@@ -3,7 +3,7 @@ import sys
 import socket
 import pickle
 import tkinter as tk
-from tkinter import simpledialog
+from tkinter import simpledialog, messagebox
 
 # Definice konstant
 SCREEN_SIZE = 600
@@ -68,19 +68,30 @@ class GomokuSetup:
         self.root = tk.Tk()
         self.root.withdraw()  # Skryje hlavní okno Tkinteru
 
+    def get_host_or_client(self):
+        answer = messagebox.askquestion("Role Selection", "Chcete být hostitelem (serverem)?")
+        return answer == "yes"
+
     def get_server_info(self):
-        host = simpledialog.askstring("Server Info", "Zadejte IP adresu kamaráda:")
-        port = simpledialog.askinteger("Server Info", "Zadejte port pro připojení:")
-        return host, port
+        is_host = self.get_host_or_client()
+        if is_host:
+            self.root.withdraw()  # Skryje dialog pro vybrání role
+            host = 'localhost'  # Můžete změnit na veřejnou IP adresu, pokud jste připojeni přes internet
+            port = simpledialog.askinteger("Server Info", "Zadejte port pro připojení:")
+            return host, port, True
+        else:
+            host = simpledialog.askstring("Server Info", "Zadejte IP adresu kamaráda:")
+            port = simpledialog.askinteger("Server Info", "Zadejte port pro připojení:")
+            return host, port, False
 
 class GomokuGame:
     def __init__(self):
         self.gomoku = Gomoku()
         self.initialize_pygame()
-        self.server_info = GomokuSetup().get_server_info()
-        self.host, self.port = self.server_info
+        self.host, self.port, self.is_host = GomokuSetup().get_server_info()
         self.server_socket = None
         self.client_socket = None
+        self.connection_confirmed = False
 
     def initialize_pygame(self):
         pygame.init()
@@ -104,6 +115,7 @@ class GomokuGame:
 
     def run_game(self):
         self.setup_network()
+        self.wait_for_connection_confirmation()  # Přidáme čekání na potvrzení připojení
         while True:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -125,10 +137,47 @@ class GomokuGame:
             self.clock.tick(30)
 
     def setup_network(self):
+        if self.is_host:
+            self.setup_host()
+        else:
+            self.setup_client()
+
+    def setup_host(self):
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            self.server_socket.bind((self.host, self.port))
+            self.server_socket.listen(1)
+            print(f"Čekání na připojení na {self.host}:{self.port}")
+            self.client_socket, addr = self.server_socket.accept()
+            print(f"Připojeno k {addr}")
+            self.send_data("ConnectionRequest")
+            response = self.receive_data()
+            if response == "ConnectionConfirmed":
+                self.connection_confirmed = True
+                print("Připojení potvrzeno.")
+            else:
+                print("Připojení zamítnuto.")
+                self.server_socket.close()
+                sys.exit(1)
+        except socket.error as e:
+            print(f"Nelze se připojit na server: {e}")
+            sys.exit(1)
+
+    def setup_client(self):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             self.server_socket.connect((self.host, self.port))
             print(f"Připojeno na server {self.host}:{self.port}")
+            self.send_data("ConnectionConfirmed")
+            print("Čekání na potvrzení od hostitele...")
+            response = self.receive_data()
+            if response == "ConnectionConfirmed":
+                self.connection_confirmed = True
+                print("Připojení potvrzeno.")
+            else:
+                print("Připojení zamítnuto.")
+                self.server_socket.close()
+                sys.exit(1)
         except socket.error as e:
             print(f"Nelze se připojit na server: {e}")
             sys.exit(1)
@@ -139,6 +188,30 @@ class GomokuGame:
             self.server_socket.send(serialized_data)
         except socket.error as e:
             print(f"Chyba při odesílání dat: {e}")
+
+    def receive_data(self):
+        try:
+            data = self.server_socket.recv(1024)
+            return pickle.loads(data)
+        except socket.error as e:
+            print(f"Chyba při přijímání dat: {e}")
+            return None
+
+    def wait_for_connection_confirmation(self):
+        if not self.connection_confirmed:
+            while True:
+                response = self.receive_data()
+                if response == "ConnectionRequest":
+                    answer = messagebox.askquestion("Connection Request", "Chcete přijmout připojení od kamaráda?")
+                    if answer == "yes":
+                        self.send_data("ConnectionConfirmed")
+                        self.connection_confirmed = True
+                        print("Připojení potvrzeno.")
+                        break
+                    else:
+                        self.send_data("ConnectionDenied")
+                        print("Připojení zamítnuto.")
+                        sys.exit(0)
 
 if __name__ == "__main__":
     game = GomokuGame()
